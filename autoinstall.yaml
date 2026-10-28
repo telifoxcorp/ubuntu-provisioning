@@ -1,0 +1,221 @@
+# Ubuntu Desktop 26.04 LTS amd64 - CIS-aligned pilot, NOT CIS certified.
+# Requires Internet, vendor endpoints, and the Desktop ISO source id ubuntu-desktop.
+# Verify casper/install-sources.yaml on your ISO if the installer rejects source.id.
+# STORAGE IS INTERACTIVE: explicitly select the correct disk and encrypted LVM/LUKS.
+# Disk selection may ERASE that disk. No shared disk-encryption/password secrets here.
+# IDENTITY IS INTERACTIVE: create a unique administrator; create a standard user later.
+# After first boot: sudo journalctl -u company-provision; log /var/log/company-provisioning.log.
+# Timer retries errors every 15 min; initial setup does not reboot automatically.
+# Reboot after success; then enroll using Intune app and run CIS audit.
+# Keep old standalone Intune hardening assignments unassigned to avoid conflicts.
+# All CIS controls, audit rules, password policy, partitioning, update deadlines,
+# standard-user lifecycle and device recovery processes are NOT completed by this file.
+# Snap/overlay/HFS/UDF support preserved intentionally pending applicability review.
+# App launchers: Outlook, Microsoft365, Teams, ChatGPT, Copilot = web app windows.
+# Zoom is downloaded from official HTTPS endpoint; latest release, not pinned.
+# APT updates Ubuntu security packages automatically; vendor app/Zoom update policy
+# still needs management. No account credentials, tokens, or license acceptance automated.
+# Sources: Canonical autoinstall reference; CIS Ubuntu 26.04 v1.0.0;
+# support.1password.com/install-linux/; google.com/linuxrepositories/;
+# learn.microsoft.com/en-us/intune/user-help/company-portal/intune-app-linux;
+# support.zoom.com Linux installation guide. Full audit mandatory before production.
+autoinstall:
+  version: 1
+  interactive-sections:
+  - storage
+  - identity
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  timezone: America/Los_Angeles
+  source:
+    id: ubuntu-desktop
+  updates: security
+  ssh:
+    install-server: false
+  packages:
+  - curl
+  - ca-certificates
+  - gnupg
+  - python3
+  - unattended-upgrades
+  - ufw
+  - auditd
+  - apparmor-utils
+  user-data:
+    write_files:
+    - path: /usr/local/sbin/company-provision
+      permissions: '0700'
+      owner: root:root
+      content: |
+        #!/bin/bash
+        # Ubuntu 26.04 LTS amd64 initial provisioning, v1.
+        # CIS-aligned subset only. No claim of CIS certification or complete compliance.
+        set -Eeuo pipefail
+        umask 077
+        export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+        export LC_ALL=C DEBIAN_FRONTEND=noninteractive
+        STATE=/var/lib/company-provisioning
+        install -d -m 0700 "$STATE"
+        exec 9>/run/lock/company-provisioning.lock
+        flock -n 9 || exit 0
+        exec >>/var/log/company-provisioning.log 2>&1
+        trap 'echo "FAILED at line $LINENO; timer will retry. No completion marker written."' ERR
+        [[ -f $STATE/completed-v1 ]] && exit 0
+        . /etc/os-release
+        [[ $ID == ubuntu && $VERSION_ID == 26.04 && $(dpkg --print-architecture) == amd64 ]]
+        echo "Provisioning started: $(date -Is)"
+        # Require encrypted root before declaring this baseline complete. /boot and EFI
+        # can remain unencrypted. This is not a complete encryption compliance audit.
+        rootdev=$(findmnt -n -o SOURCE /)
+        lsblk -s -n -o TYPE "$rootdev" | grep -qx crypt || {
+         echo 'Encrypted root not detected. Reinstall with LUKS encryption or review manually.'; exit 1;
+        }
+        install -d -m 0700 /var/cache/company-provisioning
+        work=$(mktemp -d /var/cache/company-provisioning/run.XXXXXX)
+        trap 'rm -rf -- "$work"' EXIT
+        export TMPDIR="$work"
+        aptget() { apt-get -o DPkg::Lock::Timeout=300 -o Acquire::Retries=3 "$@"; }
+        fetch() { curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 30 --max-time 900 "$1" -o "$2"; }
+        aptget update
+        aptget install -y ca-certificates curl gnupg debsig-verify apparmor apparmor-utils auditd audispd-plugins ufw unattended-upgrades python3
+        install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d
+        fetch https://dl.google.com/linux/linux_signing_key.pub "$work/google.asc"
+        gpg --batch --yes --dearmor -o /usr/share/keyrings/google-chrome.gpg "$work/google.asc"
+        echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main' > /etc/apt/sources.list.d/google-chrome.list
+        fetch https://packages.microsoft.com/keys/microsoft.asc "$work/microsoft.asc"
+        gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-edge.gpg "$work/microsoft.asc"
+        echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-edge.gpg] https://packages.microsoft.com/repos/edge stable main' > /etc/apt/sources.list.d/microsoft-edge.list
+        fetch https://downloads.1password.com/linux/keys/1password.asc "$work/1password.asc"
+        gpg --show-keys --with-colons "$work/1password.asc" | grep -q '3FEF9748469ADBE15DA7CA80AC2D62742012EA22'
+        gpg --batch --yes --dearmor -o /usr/share/keyrings/1password-archive-keyring.gpg "$work/1password.asc"
+        echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main' > /etc/apt/sources.list.d/1password.list
+        install -d -m 0755 /etc/debsig/policies/AC2D62742012EA22 /usr/share/debsig/keyrings/AC2D62742012EA22
+        fetch https://downloads.1password.com/linux/debian/debsig/1password.pol /etc/debsig/policies/AC2D62742012EA22/1password.pol
+        gpg --batch --yes --dearmor -o /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg "$work/1password.asc"
+        fetch https://packages.microsoft.com/config/ubuntu/26.04/packages-microsoft-prod.deb "$work/packages-microsoft-prod.deb"
+        aptget install -y "$work/packages-microsoft-prod.deb"
+        chmod 0644 /usr/share/keyrings/google-chrome.gpg /usr/share/keyrings/microsoft-edge.gpg /usr/share/keyrings/1password-archive-keyring.gpg /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/microsoft-edge.list /etc/apt/sources.list.d/1password.list /etc/debsig/policies/AC2D62742012EA22/1password.pol
+        aptget update
+        aptget install -y google-chrome-stable microsoft-edge-stable 1password intune-portal
+        if ! dpkg-query -W -f='${Status}' zoom 2>/dev/null | grep -qx 'install ok installed'; then
+         fetch https://zoom.us/client/latest/zoom_amd64.deb "$work/zoom_amd64.deb"
+         [[ $(dpkg-deb -f "$work/zoom_amd64.deb" Package) == zoom ]]
+         [[ $(dpkg-deb -f "$work/zoom_amd64.deb" Architecture) == amd64 ]]
+         # Official HTTPS transport + package identity checks, not a pinned release or
+         # independently verified vendor signature. Record hash for deployment inventory.
+         sha256sum "$work/zoom_amd64.deb" > "$STATE/zoom-download.sha256"
+         aptget install -y "$work/zoom_amd64.deb"
+        fi
+        aptget upgrade -y
+        # CIS-aligned initial controls: AppArmor, logging/auditing, inbound firewall,
+        # security update scheduling, selected unused modules, /tmp and /dev/shm.
+        # No existing audit rules, firewall rules, or AppArmor profiles are cleared.
+        systemctl enable --now apparmor auditd
+        systemctl enable --now systemd-journald
+        ufw default deny incoming
+        ufw default allow outgoing
+        ufw logging low
+        ufw --force enable
+        install -d -m 0755 /etc/systemd/journald.conf.d
+        printf '[Journal]\nStorage=persistent\nCompress=yes\n' > /etc/systemd/journald.conf.d/60-company.conf
+        install -d -m 2755 -o root -g systemd-journal /var/log/journal
+        systemctl restart systemd-journald
+        cat > /etc/apt/apt.conf.d/60company-security-updates <<'EOF'
+        APT::Periodic::Update-Package-Lists "1";
+        APT::Periodic::Unattended-Upgrade "1";
+        Unattended-Upgrade::Automatic-Reboot "false";
+        EOF
+        chmod 0644 /etc/apt/apt.conf.d/60company-security-updates
+        systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
+        # Explicit allowlist; preserve ext*, XFS, Btrfs, FAT, NTFS, exFAT, HFS/HFS+,
+        # NFS/SMB, FUSE, UDF, overlay and squashfs. Manual CIS applicability is required.
+        modules=(cramfs freevxfs jffs2)
+        types=$(findmnt -rn -o FSTYPE)
+        for module in "${modules[@]}"; do
+         ! grep -qx "$module" <<< "$types"
+         ! awk -v f="$module" '!/^#/ && $3==f {found=1} END {exit !found}' /etc/fstab
+        done
+        {
+         for module in "${modules[@]}"; do
+          printf 'install %s /bin/false\nblacklist %s\n' "$module" "$module"
+         done
+        } > /etc/modprobe.d/99-company-unused-filesystems.conf
+        chmod 0644 /etc/modprobe.d/99-company-unused-filesystems.conf
+        for module in "${modules[@]}"; do
+         if awk -v m="$module" '$1==m {found=1} END {exit !found}' /proc/modules; then modprobe -r "$module"; fi
+        done
+        # Stage both mounts together. Do not hide existing live /tmp/shared-memory files.
+        python3 - <<'PYCODE'
+        from pathlib import Path
+        import os, tempfile, subprocess
+        p=Path('/etc/fstab'); old=p.read_text(); lines=old.splitlines()
+        for target,size in [('/tmp','25%'),('/dev/shm','50%')]:
+            entries=[(i,l.split()) for i,l in enumerate(lines) if l.strip() and not l.lstrip().startswith('#') and len(l.split())>1 and l.split()[1]==target]
+            if len(entries)>1: raise SystemExit('Duplicate mount: '+target)
+            if entries:
+                i,f=entries[0]
+                if len(f)!=6 or f[2] in ('overlay','autofs','auto') or any(o in f[3].split(',') for o in ('bind','rbind','noauto','nofail','ro')):
+                    raise SystemExit('Review existing mount: '+target)
+                opts=[o for o in f[3].split(',') if o not in ('dev','suid','exec','nodev','nosuid','noexec')]
+                f[3]=','.join(opts+['nodev','nosuid','noexec']); lines[i]='\t'.join(f)
+            else:
+                lines.append(f'tmpfs\t{target}\ttmpfs\trw,nodev,nosuid,noexec,mode=1777,size={size}\t0\t0')
+        new='\n'.join(lines)+'\n'
+        backup=Path('/var/lib/company-provisioning/fstab.before')
+        if not backup.exists(): backup.write_text(old)
+        fd,name=tempfile.mkstemp(dir='/etc',prefix='.company-fstab-')
+        try:
+            with os.fdopen(fd,'w') as f:f.write(new)
+            subprocess.run(['findmnt','--verify','--tab-file',name],check=True)
+            if p.read_text()!=old: raise SystemExit('Concurrent fstab change')
+            os.chmod(name,0o644); os.replace(name,p)
+        finally:
+            if os.path.exists(name): os.unlink(name)
+        PYCODE
+        update-initramfs -u -k all
+        # Browser app-mode launchers, NOT unofficial native applications or installed PWAs.
+        python3 - <<'PYCODE'
+        from pathlib import Path
+        apps={'outlook':('Outlook','https://outlook.office.com/'),
+         'microsoft365':('Microsoft 365','https://www.microsoft365.com/'),
+         'teams':('Microsoft Teams','https://teams.microsoft.com/'),
+         'chatgpt':('ChatGPT','https://chatgpt.com/'),
+         'copilot':('Microsoft Copilot','https://copilot.microsoft.com/')}
+        for key,(name,url) in apps.items():
+         p=Path('/usr/share/applications')/('company-'+key+'.desktop')
+         p.write_text(f'[Desktop Entry]\nVersion=1.0\nType=Application\nName={name}\nComment=Browser-based service; sign-in and licensing may be required\nExec=/usr/bin/microsoft-edge --app={url}\nIcon=microsoft-edge\nTerminal=false\nCategories=Office;Network;\n')
+         p.chmod(0o644)
+        PYCODE
+        dpkg-query -W google-chrome-stable microsoft-edge-stable 1password zoom intune-portal > "$STATE/packages.txt"
+        printf 'Initial provisioning finished %s\nREBOOT REQUIRED; CIS AUDIT AND INTUNE ENROLLMENT STILL REQUIRED\n' "$(date -Is)" > "$STATE/completed-v1"
+        echo 'SUCCESS: initial configuration staged. Reboot manually, enroll in Intune, and audit CIS.'
+    - path: /etc/systemd/system/company-provision.service
+      permissions: '0644'
+      content: |
+        [Unit]
+        Description=Ubuntu workstation initial provisioning
+        Wants=network-online.target
+        After=network-online.target cloud-final.service
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/company-provision
+        TimeoutStartSec=3600
+    - path: /etc/systemd/system/company-provision.timer
+      permissions: '0644'
+      content: |
+        [Unit]
+        Description=Retry initial workstation provisioning until complete
+        [Timer]
+        OnBootSec=3min
+        OnUnitInactiveSec=15min
+        Unit=company-provision.service
+        [Install]
+        WantedBy=timers.target
+    runcmd:
+    - - systemctl
+      - daemon-reload
+    - - systemctl
+      - enable
+      - --now
+      - company-provision.timer
